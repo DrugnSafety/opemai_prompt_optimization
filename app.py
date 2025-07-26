@@ -173,7 +173,7 @@ def add_feedback_progress(message: str):
         'message': message
     })
 
-async def run_optimization(prompt: str, few_shot_messages: List[ChatMessage] = None, api_key: str = None, model: str = "gpt-4o"):
+async def run_optimization(prompt: str, prompt_type: str = None, num_candidates: int = 3, api_key: str = None, model: str = "gpt-4o"):
     """비동기 최적화 실행"""
     st.session_state.progress_messages = []
     
@@ -184,7 +184,8 @@ async def run_optimization(prompt: str, few_shot_messages: List[ChatMessage] = N
     try:
         results = await optimize_prompt_comprehensive(
             prompt=prompt,
-            few_shot_messages=few_shot_messages,
+            prompt_type=prompt_type,
+            num_candidates=num_candidates,
             progress_callback=progress_callback,
             api_key=api_key,
             model=model
@@ -274,19 +275,12 @@ with tab1:
             if not api_key:
                 st.error(get_text("api_key_required"))
             elif user_prompt.strip():
-                # Few-shot 메시지 변환
-                few_shot_chat_messages = []
-                for msg in st.session_state.few_shot_messages:
-                    if msg['content'].strip():
-                        few_shot_chat_messages.append(
-                            ChatMessage(role=Role(msg['role']), content=msg['content'])
-                        )
-                
                 # 비동기 최적화 실행
                 with st.spinner(get_text("optimizing_prompt")):
                     results = asyncio.run(run_optimization(
                         prompt=user_prompt,
-                        few_shot_messages=few_shot_chat_messages if few_shot_chat_messages else None,
+                        prompt_type=selected_type,
+                        num_candidates=num_candidates,
                         api_key=api_key,
                         model=gpt_model
                     ))
@@ -301,62 +295,86 @@ with tab1:
     
     with col2:
         st.subheader(get_text("prompt_type"))
-        prompt_type = st.selectbox(
-            get_text("prompt_type"),
-            get_text("prompt_type_options")
+        
+        # 프롬프트 유형 선택 (자동 감지 옵션 포함)
+        prompt_type_options = [
+            "자동 감지",
+            "창의적 글쓰기 (creative_writing)",
+            "코드 생성 (code_generation)",
+            "질문 답변 (qa)",
+            "분석 (analysis)",
+            "지시사항 수행 (instruction_following)"
+        ]
+        
+        selected_prompt_type = st.selectbox(
+            "프롬프트 유형을 선택하세요",
+            prompt_type_options,
+            help="프롬프트 유형을 선택하면 해당 유형에 최적화된 전략이 적용됩니다. '자동 감지'를 선택하면 AI가 프롬프트를 분석하여 유형을 판단합니다."
         )
         
-        st.subheader(get_text("advanced_settings"))
-        include_agentic = st.checkbox(
-            get_text("agentic_enhancement"),
-            help=get_text("agentic_help")
-        )
+        # 선택된 유형을 영어 키로 변환
+        prompt_type_map = {
+            "자동 감지": None,
+            "창의적 글쓰기 (creative_writing)": "creative_writing",
+            "코드 생성 (code_generation)": "code_generation",
+            "질문 답변 (qa)": "qa",
+            "분석 (analysis)": "analysis",
+            "지시사항 수행 (instruction_following)": "instruction_following"
+        }
         
-        optimize_for_tools = st.checkbox(
-            get_text("tool_optimization"),
-            help=get_text("tool_help")
-        )
+        selected_type = prompt_type_map.get(selected_prompt_type)
         
-        # Few-shot 예제를 오른쪽 열로 이동
         st.markdown("---")
-        st.subheader(get_text("few_shot_examples"))
-        st.markdown(get_text("few_shot_description"))
         
-        col3, col4 = st.columns(2)
+        # 프롬프트 후보 생성 개수 설정
+        st.subheader("🔄 프롬프트 최적화 전략")
         
-        with col3:
-            if st.button(get_text("add_example"), key="add_example_btn"):
-                st.session_state.few_shot_messages.append({
-                    'role': 'user',
-                    'content': ''
-                })
-                st.session_state.few_shot_messages.append({
-                    'role': 'assistant', 
-                    'content': ''
-                })
+        num_candidates = st.slider(
+            "생성할 프롬프트 변형 개수",
+            min_value=2,
+            max_value=5,
+            value=3,
+            help="더 많은 변형을 생성하면 더 다양한 최적화 옵션을 탐색할 수 있지만, 처리 시간이 늘어납니다."
+        )
         
-        with col4:
-            if st.button(get_text("delete_examples"), key="delete_examples_btn"):
-                st.session_state.few_shot_messages = []
+        # 고급 최적화 전략 표시
+        with st.expander("📊 최적화 전략 상세"):
+            st.info("""
+            **프롬프트 최적화 프로세스:**
+            
+            1. **프롬프트 유형 감지**: AI가 프롬프트의 목적과 특성을 분석
+            2. **후보 생성**: 다양한 변형 프롬프트 생성
+            3. **평가 및 채점**: 
+               - 모순 검사 (Contradiction Check)
+               - 형식 검증 (Format Validation)
+               - 안전성 검사 (Safety & Bias Check)
+               - 관련성 평가 (Relevance Evaluation)
+            4. **순위 매기기**: 종합 점수 기반 최적 프롬프트 선택
+            5. **최종 최적화**: 선택된 프롬프트 추가 개선
+            """)
         
-        # Few-shot 예제 입력
-        if st.session_state.few_shot_messages:
-            st.markdown(get_text("few_shot_examples_header"))
-            for i in range(0, len(st.session_state.few_shot_messages), 2):
-                st.session_state.few_shot_messages[i]['content'] = st.text_area(
-                    f"{get_text('user_message')} {i//2 + 1}",
-                    value=st.session_state.few_shot_messages[i]['content'],
-                    key=f"user_{i}",
-                    height=80
-                )
-                
-                if i + 1 < len(st.session_state.few_shot_messages):
-                    st.session_state.few_shot_messages[i+1]['content'] = st.text_area(
-                        f"{get_text('assistant_response')} {i//2 + 1}",
-                        value=st.session_state.few_shot_messages[i+1]['content'],
-                        key=f"assistant_{i+1}",
-                        height=80
-                    )
+        # 예시 프롬프트 제공
+        st.markdown("---")
+        st.subheader("💡 예시 프롬프트")
+        
+        example_prompts = {
+            "창의적 글쓰기": "한국의 전통 음식에 대한 흥미로운 이야기를 써주세요. 역사적 배경과 현대적 의미를 포함해주세요.",
+            "코드 생성": "Python으로 간단한 할 일 목록 앱을 만들어주세요. 추가, 삭제, 완료 표시 기능이 필요합니다.",
+            "질문 답변": "인공지능이 인간의 창의성을 대체할 수 있을까요? 장단점을 분석해주세요.",
+            "분석": "최근 5년간 전기차 시장의 성장 추세를 분석하고 향후 전망을 제시해주세요.",
+            "지시사항 수행": "다음 텍스트를 요약하고, 핵심 포인트 3가지를 bullet point로 정리해주세요: [텍스트]"
+        }
+        
+        selected_example = st.selectbox(
+            "예시 선택",
+            ["직접 입력"] + list(example_prompts.keys())
+        )
+        
+        if selected_example != "직접 입력" and st.button("예시 사용", key="use_example"):
+            # 예시를 메인 프롬프트 입력란에 설정하는 방법은 
+            # Streamlit의 제약으로 인해 세션 상태를 통해 처리해야 함
+            st.info(f"선택한 예시: {example_prompts[selected_example]}")
+            st.markdown("👆 위 예시를 복사하여 왼쪽 프롬프트 입력란에 붙여넣으세요.")
 
 # 탭 2: 분석 진행
 with tab2:
@@ -417,13 +435,20 @@ with tab3:
     if st.session_state.optimization_results:
         results = st.session_state.optimization_results
         
+        # 프롬프트 유형 감지 결과 표시
+        if results.get('type_detection'):
+            st.info(f"""
+            🔍 **감지된 프롬프트 유형**: {results['detected_type']} 
+            (신뢰도: {results['type_detection']['confidence']:.2%})
+            """)
+        
         # 요약 메트릭
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.metric(
-                "발견된 문제",
-                results.get('total_issues_found', 0),
+                "생성된 후보",
+                len(results.get('prompt_candidates', [])),
                 delta=None
             )
         
@@ -435,13 +460,17 @@ with tab3:
             )
         
         with col3:
-            analysis_results = results.get('analysis_results', [])
-            high_severity = sum(1 for r in analysis_results if r.get('severity') == 'high')
-            st.metric(
-                "고위험 문제",
-                high_severity,
-                delta=f"-{high_severity}" if high_severity > 0 else None
-            )
+            # 최고 점수 표시
+            ranking_results = results.get('ranking_results', {})
+            if ranking_results and ranking_results.get('ranked_prompts'):
+                best_score = ranking_results['ranked_prompts'][0].get('final_score', 0)
+                st.metric(
+                    "최고 점수",
+                    f"{best_score:.2f}",
+                    delta=None
+                )
+            else:
+                st.metric("최고 점수", "N/A", delta=None)
         
         with col4:
             changes_made = results.get('optimization_details', {}).get('changes_made', [])
@@ -453,158 +482,48 @@ with tab3:
         
         st.markdown("---")
         
-        # 상세 분석 결과
-        st.subheader("🔍 상세 분석 결과")
+        # 프롬프트 후보 및 평가 결과
+        st.subheader("🔄 프롬프트 후보 생성 및 평가")
         
-        original_prompt = results.get('original_prompt', '')
-        
-        for i, analysis in enumerate(analysis_results):
-            category = analysis.get('category', 'general')
-            severity = analysis.get('severity', 'medium')
-            issues = analysis.get('issues', [])
+        if results.get('prompt_candidates'):
+            # 각 후보의 평가 점수를 표 형태로 표시
+            candidate_evaluations = results.get('candidate_evaluations', [])
             
-            if issues:
-                with st.expander(f"{display_category_badge(category)} - {display_severity_badge(severity)} ({len(issues)}개 문제)"):
-                    for j, issue in enumerate(issues, 1):
-                        st.markdown(f"""
-                        <div style="background-color: #ffeb3b22; padding: 8px; border-left: 3px solid #ff9800; margin: 5px 0;">
-                            <strong>{j}. 🔍 발견된 문제:</strong><br>
-                            {issue}
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                                                # 문제와 관련된 프롬프트 부분 인용 및 분석 (대폭 개선)
-                        st.markdown("**📋 원본 프롬프트에서 해당 문제 부분 분석:**")
-                        
-                        # 문제 내용에서 키워드 추출하여 원본 프롬프트에서 찾기
-                        issue_lower = issue.lower()
-                        found_problems = []
-                        
-                        # 1. 모순/충돌 감지
-                        if 'contradictory' in issue_lower or 'conflict' in issue_lower or '모순' in issue_lower:
-                            # 상충되는 지시사항 찾기
-                            if 'missing' in issue_lower and 'error' in issue_lower and 'null' in issue_lower:
-                                # required field 관련 모순
-                                conflict_parts = []
-                                lines = original_prompt.split('\n')
-                                for i, line in enumerate(lines):
-                                    if 'required' in line.lower() and ('missing' in line.lower() or 'error' in line.lower()):
-                                        conflict_parts.append(f"라인 {i+1}: {line.strip()}")
-                                    elif 'null' in line.lower() and 'acceptable' in line.lower():
-                                        conflict_parts.append(f"라인 {i+1}: {line.strip()}")
-                                
-                                if conflict_parts:
-                                    found_problems.append({
-                                        'type': '상충되는 지시사항',
-                                        'parts': conflict_parts,
-                                        'explanation': '필수 필드 누락 시 에러 처리와 null 허용 지시가 충돌'
-                                    })
-                        
-                        # 2. 구문/형식 오류 감지
-                        if 'json' in issue_lower and ('not properly closed' in issue_lower or 'missing' in issue_lower):
-                            # JSON 구조 문제 찾기
-                            json_parts = []
-                            lines = original_prompt.split('\n')
-                            in_json = False
-                            brace_count = 0
-                            
-                            for i, line in enumerate(lines):
-                                if '{' in line:
-                                    in_json = True
-                                    brace_count += line.count('{')
-                                if in_json:
-                                    brace_count -= line.count('}')
-                                    json_parts.append(f"라인 {i+1}: {line.strip()}")
-                                    if brace_count == 0:
-                                        break
-                            
-                            if json_parts and brace_count > 0:
-                                found_problems.append({
-                                    'type': 'JSON 구조 오류',
-                                    'parts': json_parts[-3:] if len(json_parts) > 3 else json_parts,
-                                    'explanation': f'JSON 닫는 괄호 누락 (현재 균형: {brace_count})'
-                                })
-                        
-                        # 3. 마크다운 형식 문제
-                        if 'markdown' in issue_lower and 'backticks' in issue_lower:
-                            markdown_parts = []
-                            lines = original_prompt.split('\n')
-                            for i, line in enumerate(lines):
-                                if '```' in line:
-                                    markdown_parts.append(f"라인 {i+1}: {line.strip()}")
-                            
-                            if markdown_parts:
-                                found_problems.append({
-                                    'type': '마크다운 형식 혼란',
-                                    'parts': markdown_parts,
-                                    'explanation': '출력에 영향을 줄 수 있는 마크다운 형식 포함'
-                                })
-                        
-                        # 4. 모호한 용어/지시사항
-                        if 'ambiguity' in issue_lower or 'unclear' in issue_lower or '모호' in issue_lower:
-                            ambiguous_parts = []
-                            
-                            # 구체적인 모호한 부분 찾기
-                            if 'synonyms' in issue_lower:
-                                lines = original_prompt.split('\n')
-                                for i, line in enumerate(lines):
-                                    if 'synonym' in line.lower() or 'collapse' in line.lower():
-                                        ambiguous_parts.append(f"라인 {i+1}: {line.strip()}")
-                            
-                            if 'care_instructions' in issue_lower or 'features' in issue_lower:
-                                lines = original_prompt.split('\n')
-                                for i, line in enumerate(lines):
-                                    if 'care_instructions' in line or 'features' in line:
-                                        ambiguous_parts.append(f"라인 {i+1}: {line.strip()}")
-                            
-                            if ambiguous_parts:
-                                found_problems.append({
-                                    'type': '모호한 지시사항',
-                                    'parts': ambiguous_parts,
-                                    'explanation': '구체적인 처리 방법이나 예시가 부족한 지시사항'
-                                })
-                        
-                        # 문제 부분들 표시
-                        if found_problems:
-                            for prob_idx, problem in enumerate(found_problems, 1):
-                                st.markdown(f"""
-                                <div style="background-color: #fff3e0; border-left: 4px solid #ff9800; padding: 12px; margin: 8px 0; border-radius: 5px;">
-                                    <strong>🎯 {problem['type']} #{prob_idx}</strong><br>
-                                    <em style="color: #f57c00;">{problem['explanation']}</em>
-                                </div>
-                                """, unsafe_allow_html=True)
-                                
-                                st.markdown("**해당 프롬프트 부분:**")
-                                for part in problem['parts']:
-                                    st.code(part, language='text')
-                        else:
-                            # 기본 키워드 기반 검색 (기존 로직 단순화)
-                            problem_keywords = []
-                            if 'unclear' in issue_lower: problem_keywords.extend(['maybe', 'perhaps', 'might'])
-                            if 'missing' in issue_lower: problem_keywords.extend(['task', 'goal', 'format'])
-                            if 'ambiguous' in issue_lower: problem_keywords.extend(['this', 'that', 'it'])
-                            
-                            if problem_keywords:
-                                lines = original_prompt.split('\n')
-                                matching_lines = []
-                                for i, line in enumerate(lines):
-                                    if any(keyword in line.lower() for keyword in problem_keywords):
-                                        matching_lines.append(f"라인 {i+1}: {line.strip()}")
-                                
-                                if matching_lines:
-                                    st.markdown("**관련 가능성이 있는 프롬프트 부분:**")
-                                    for line in matching_lines[:3]:  # 최대 3개
-                                        st.code(line, language='text')
-                                else:
-                                    st.info("💡 해당 문제는 전체적인 프롬프트 구조나 내용의 맥락과 관련이 있을 수 있습니다.")
-            else:
-                st.success(f"{display_category_badge(category)} - 문제 없음 ✅")
+            for idx, (candidate, evaluation) in enumerate(zip(results['prompt_candidates'], candidate_evaluations)):
+                with st.expander(f"후보 {idx + 1} - 종합 점수: {evaluation.get('contradiction_score', 0) * 0.3 + evaluation.get('format_score', 0) * 0.3 + evaluation.get('safety_score', 0) * 0.4:.2f}"):
+                    # 점수 표시
+                    score_col1, score_col2, score_col3 = st.columns(3)
+                    with score_col1:
+                        st.metric("모순 점수", f"{evaluation.get('contradiction_score', 0):.2f}")
+                    with score_col2:
+                        st.metric("형식 점수", f"{evaluation.get('format_score', 0):.2f}")
+                    with score_col3:
+                        st.metric("안전성 점수", f"{evaluation.get('safety_score', 0):.2f}")
+                    
+                    # 프롬프트 내용
+                    st.markdown("**프롬프트 내용:**")
+                    st.code(candidate, language='text')
         
-        # 원본 프롬프트 표시
-        st.subheader("📝 원본 프롬프트")
-        with st.expander("원본 프롬프트 보기"):
-            st.code(results.get('original_prompt', ''), language='text')
-    
+        st.markdown("---")
+        
+        # 순위 결과
+        st.subheader("🏆 최적화 순위")
+        
+        ranking_results = results.get('ranking_results', {})
+        if ranking_results and ranking_results.get('ranked_prompts'):
+            for rank_info in ranking_results['ranked_prompts'][:3]:  # 상위 3개만 표시
+                rank = rank_info.get('rank', 0)
+                score = rank_info.get('final_score', 0)
+                prompt = rank_info.get('prompt', '')
+                
+                if rank == 1:
+                    st.success(f"🥇 **1위** (점수: {score:.2f})")
+                elif rank == 2:
+                    st.info(f"🥈 **2위** (점수: {score:.2f})")
+                else:
+                    st.warning(f"🥉 **3위** (점수: {score:.2f})")
+                
+                st.code(prompt, language='text')
     else:
         st.info("💡 분석 결과가 없습니다. 먼저 프롬프트를 최적화해주세요.")
 

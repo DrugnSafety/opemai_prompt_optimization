@@ -81,6 +81,40 @@ class GeneralResponse(BaseModel):
     explanation: str
     feedback_addressed: str
 
+# 새로운 모델 추가
+class PromptTypeDetection(BaseModel):
+    """프롬프트 유형 감지 결과"""
+    detected_type: str  # creative_writing, code_generation, qa, analysis, instruction_following, etc.
+    confidence: float  # 0-1
+    type_characteristics: List[str]
+    optimization_strategy: str
+    relevant_checkers: List[str]  # 해당 유형에 적합한 체커들
+
+class PromptCandidateOutput(BaseModel):
+    """프롬프트 후보 생성 결과"""
+    prompt_candidates: List[str]
+
+class PromptEvaluationScores(BaseModel):
+    """개별 프롬프트 평가 점수"""
+    prompt: str
+    format_score: float
+    contradiction_score: float
+    relevance_score: float
+
+class PerformanceRankingOutput(BaseModel):
+    """성능 순위 결과"""
+    ranked_prompts: List[Dict[str, Any]]  # [{"prompt": str, "final_score": float, "rank": int}]
+
+class RelevanceEvaluationOutput(BaseModel):
+    """관련성 평가 결과"""
+    alignment_score: float  # 0.0 to 1.0
+    evaluation_summary: str
+
+class SafetyCheckOutput(BaseModel):
+    """안전성 검사 결과"""
+    is_safe: bool
+    safety_flags: List[Dict[str, str]]  # [{"category": str, "details": str}]
+
 # Agent 구현
 class Agent:
     def __init__(self, name: str, model: str, output_type: type, instructions: str):
@@ -132,6 +166,36 @@ class Runner:
   "changes_made": ["string"],
   "explanation": "string",
   "feedback_addressed": "string"
+}'''
+        elif model_class == PromptTypeDetection:
+            return '''{
+  "detected_type": "string",
+  "confidence": number,
+  "type_characteristics": ["string"],
+  "optimization_strategy": "string",
+  "relevant_checkers": ["string"]
+}'''
+        elif model_class == PromptCandidateOutput:
+            return '''{
+  "prompt_candidates": ["string"]
+}'''
+        elif model_class == PerformanceRankingOutput:
+            return '''{
+  "ranked_prompts": [
+    {"prompt": "string", "final_score": number, "rank": number}
+  ]
+}'''
+        elif model_class == RelevanceEvaluationOutput:
+            return '''{
+  "alignment_score": number,
+  "evaluation_summary": "string"
+}'''
+        elif model_class == SafetyCheckOutput:
+            return '''{
+  "is_safe": boolean,
+  "safety_flags": [
+    {"category": "string", "details": "string"}
+  ]
 }'''
         else:
             return "{}"
@@ -812,41 +876,196 @@ def preserve_markdown_emphasis(original: str, optimized: str, issues: list) -> s
 def create_agents(model: str = "gpt-4o"):
     """모델을 기반으로 Agent 인스턴스들을 생성"""
     return {
-        "clarity_checker": Agent(
-            name="clarity_checker",
+        # OpenAI Cookbook 원본 checker들
+        "dev_contradiction_checker": Agent(
+            name="contradiction_detector",
             model=model,
             output_type=Issues,
-            instructions="Analyze prompt clarity based on GPT-4.1 guidelines"
+            instructions="""
+You are **Dev-Contradiction-Checker**.
+
+Goal
+Detect *genuine* self-contradictions or impossibilities **inside** the developer prompt supplied in the variable `DEVELOPER_MESSAGE`.
+
+Definitions
+• A contradiction = two clauses that cannot both be followed.
+• Overlaps or redundancies in the DEVELOPER_MESSAGE are *not* contradictions.
+
+What you MUST do
+1. Compare every imperative / prohibition against all others.
+2. List at most FIVE contradictions (each as ONE bullet).
+3. If no contradiction exists, say so.
+
+Output format (**strict JSON**)
+Return **only** an object that matches the `Issues` schema:
+
+```json
+{"has_issues": <bool>,
+"issues": [
+    "<bullet 1>",
+    "<bullet 2>"
+]
+}
+- has_issues = true IFF the issues array is non-empty.
+- Do not add extra keys, comments or markdown.
+"""
         ),
-        "specificity_checker": Agent(
-            name="specificity_checker", 
+        "format_checker": Agent(
+            name="format_checker",
             model=model,
             output_type=Issues,
-            instructions="Analyze prompt specificity and concrete instructions"
+            instructions="""
+You are Format-Checker.
+
+Task
+Decide whether the developer prompt requires a structured output (JSON/CSV/XML/Markdown table, etc.).
+If so, flag any missing or unclear aspects of that format.
+
+Steps
+Categorise the task as:
+a. "conversation_only", or
+b. "structured_output_required".
+
+For case (b):
+- Point out absent fields, ambiguous data types, unspecified ordering, or missing error-handling.
+
+Do NOT invent issues if unsure. be a little bit more conservative in flagging format issues
+
+Output format
+Return strictly-valid JSON following the Issues schema:
+
+{
+"has_issues": <bool>,
+"issues": ["<desc 1>", "..."]
+}
+Maximum five issues. No extra keys or text.
+"""
         ),
-        "instruction_following_checker": Agent(
-            name="instruction_following_checker",
-            model=model, 
-            output_type=Issues,
-            instructions="Check for contradictory or unclear instructions"
-        ),
-        "agentic_capability_checker": Agent(
-            name="agentic_capability_checker",
+        # 새로운 에이전트들
+        "prompt_type_detector": Agent(
+            name="prompt_type_detector",
             model=model,
-            output_type=Issues,
-            instructions="Analyze agentic workflow capabilities based on GPT-4.1 guide"
+            output_type=PromptTypeDetection,
+            instructions="""
+You are Prompt-Type-Detector.
+Your task is to analyze the given prompt and determine its type and characteristics.
+
+Analyze the prompt for:
+1. Primary purpose (creative_writing, code_generation, qa, analysis, instruction_following, etc.)
+2. Key characteristics that define this type
+3. Appropriate optimization strategy for this type
+4. Which checkers would be most relevant
+
+Be specific and confident in your assessment.
+"""
+        ),
+        "prompt_candidate_generator": Agent(
+            name="prompt_candidate_generator",
+            model=model,
+            output_type=PromptCandidateOutput,
+            instructions="""
+You are Prompt-Candidate-Generator.
+You receive:
+- BASE_PROMPT_IDEA (a string with the core user request)
+- NUM_CANDIDATES (an integer for how many variations to create)
+
+Your task is to generate diverse variations of the BASE_PROMPT_IDEA.
+
+Generation rules:
+- Rephrase the core request using different wording.
+- Change the prompt structure (e.g., from question to instruction).
+- Add or modify constraints and personas.
+- Preserve the original intent of the base idea.
+
+Output format (strict JSON)
+{
+  "prompt_candidates": ["<full text of candidate 1>", "<full text of candidate 2>"]
+}
+No other keys, no markdown.
+"""
+        ),
+        "performance_ranker_selector": Agent(
+            name="performance_ranker_selector",
+            model=model,
+            output_type=PerformanceRankingOutput,
+            instructions="""
+You are Performance-Ranker-and-Selector.
+You receive:
+- CANDIDATE_EVALUATIONS: A list of objects, where each object contains a prompt candidate and its evaluation scores.
+  Example item: {"prompt": "...", "format_score": 1.0, "contradiction_score": 0.9, "relevance_score": 0.7}
+
+Your task is to aggregate the scores for each candidate and rank them to find the best-performing prompt.
+
+Ranking rules:
+- Calculate a weighted average score for each candidate based on its evaluation results.
+- Rank the prompts from highest to lowest score.
+
+Output format (strict JSON)
+{
+  "ranked_prompts": [
+    {"prompt": "<full text of best prompt>", "final_score": <float>, "rank": 1},
+    {"prompt": "<full text of second-best prompt>", "final_score": <float>, "rank": 2}
+  ]
+}
+No other keys, no markdown.
+"""
+        ),
+        "relevance_goal_alignment_evaluator": Agent(
+            name="relevance_goal_alignment_evaluator",
+            model=model,
+            output_type=RelevanceEvaluationOutput,
+            instructions="""
+You are Relevance-and-Goal-Alignment-Evaluator.
+You receive:
+- ORIGINAL_PROMPT (the prompt given to the model)
+- MODEL_OUTPUT (the text generated by the model)
+
+Your task is to evaluate how well the MODEL_OUTPUT satisfies the user's intent expressed in the ORIGINAL_PROMPT.
+
+Evaluation criteria:
+- Relevance: Is the output on-topic?
+- Completeness: Does the output fully answer the user's request?
+- Accuracy: Does the output provide a correct and useful response to the core task?
+
+Output format (strict JSON)
+{
+  "alignment_score": <float from 0.0 to 1.0>,
+  "evaluation_summary": "<brief explanation of the score, noting any gaps in relevance or completeness>"
+}
+No other keys, no markdown.
+"""
+        ),
+        "safety_bias_checker": Agent(
+            name="safety_bias_checker",
+            model=model,
+            output_type=SafetyCheckOutput,
+            instructions="""
+You are Safety-and-Bias-Checker.
+You receive:
+- TEXT_TO_CHECK (can be a prompt or a model output)
+
+Your task is to scan the text for harmful content, social biases, toxic language, and Personally Identifiable Information (PII).
+
+Detection rules:
+- Flag any content that falls into predefined safety categories.
+- Identify subtle social biases and stereotypes.
+- Detect potential PII like names, emails, or phone numbers.
+
+Output format (strict JSON)
+{
+  "is_safe": <boolean>,
+  "safety_flags": [
+    {"category": "<e.g., HATE_SPEECH>", "details": "<specific text flagged>"}
+  ]
+}
+No other keys, no markdown.
+"""
         ),
         "prompt_optimizer": Agent(
             name="prompt_optimizer",
             model=model,
             output_type=OptimizedPrompt,
             instructions="Optimize prompts based on GPT-4.1 best practices"
-        ),
-        "few_shot_optimizer": Agent(
-            name="few_shot_optimizer",
-            model=model,
-            output_type=dict,
-            instructions="Optimize few-shot examples for better performance"
         ),
         "feedback_analyzer": Agent(
             name="feedback_analyzer",
@@ -865,7 +1084,8 @@ def create_agents(model: str = "gpt-4o"):
 # 메인 최적화 함수
 async def optimize_prompt_comprehensive(
     prompt: str,
-    few_shot_messages: List[ChatMessage] = None,
+    prompt_type: str = None,
+    num_candidates: int = 3,
     progress_callback=None,
     api_key: str = None,
     model: str = "gpt-4o"
@@ -878,27 +1098,97 @@ async def optimize_prompt_comprehensive(
     # Agent 생성
     agents = create_agents(model)
     
-    # 1단계: 병렬 분석
-    analysis_tasks = [
-        Runner.run(agents["clarity_checker"], prompt, progress_callback, api_key),
-        Runner.run(agents["specificity_checker"], prompt, progress_callback, api_key),
-        Runner.run(agents["instruction_following_checker"], prompt, progress_callback, api_key),
-        Runner.run(agents["agentic_capability_checker"], prompt, progress_callback, api_key),
-    ]
+    # 0단계: 프롬프트 유형 감지 (유형이 제공되지 않은 경우)
+    detected_type = prompt_type
+    type_detection_result = None
     
-    analysis_results = await asyncio.gather(*analysis_tasks)
+    if not prompt_type:
+        if progress_callback:
+            progress_callback("🔍 프롬프트 유형 자동 감지 중...")
+        
+        type_detection_result = await Runner.run(
+            agents["prompt_type_detector"], 
+            prompt, 
+            progress_callback, 
+            api_key
+        )
+        detected_type = type_detection_result.final_output.detected_type
+        
+        if progress_callback:
+            progress_callback(f"✅ 프롬프트 유형 감지: {detected_type} (신뢰도: {type_detection_result.final_output.confidence:.2f})")
     
-    # 2단계: 결과 집계
-    all_issues = [result.final_output.model_dump() for result in analysis_results]
-    total_issues = sum(len(issues['issues']) for issues in all_issues)
-    
+    # 1단계: 프롬프트 후보 생성
     if progress_callback:
-        progress_callback(f"📊 분석 완료: 총 {total_issues}개 문제 발견")
+        progress_callback(f"🔄 {num_candidates}개의 프롬프트 변형 생성 중...")
     
-    # 3단계: 프롬프트 최적화
+    candidate_input = {
+        "BASE_PROMPT_IDEA": prompt,
+        "NUM_CANDIDATES": num_candidates
+    }
+    
+    candidates_result = await Runner.run(
+        agents["prompt_candidate_generator"],
+        json.dumps(candidate_input),
+        progress_callback,
+        api_key
+    )
+    
+    prompt_candidates = candidates_result.final_output.prompt_candidates
+    
+    # 2단계: 각 후보에 대한 병렬 분석
+    if progress_callback:
+        progress_callback("📊 각 프롬프트 후보 분석 중...")
+    
+    all_candidate_evaluations = []
+    
+    for candidate in prompt_candidates:
+        # 각 후보에 대한 기본 체크
+        analysis_tasks = [
+            Runner.run(agents["dev_contradiction_checker"], f"DEVELOPER_MESSAGE: {candidate}", progress_callback, api_key),
+            Runner.run(agents["format_checker"], candidate, progress_callback, api_key),
+            Runner.run(agents["safety_bias_checker"], json.dumps({"TEXT_TO_CHECK": candidate}), progress_callback, api_key),
+        ]
+        
+        analysis_results = await asyncio.gather(*analysis_tasks)
+        
+        # 점수 계산
+        contradiction_score = 1.0 if not analysis_results[0].final_output.has_issues else 0.5
+        format_score = 1.0 if not analysis_results[1].final_output.has_issues else 0.7
+        safety_result = analysis_results[2].final_output
+        safety_score = 1.0 if safety_result.is_safe else 0.3
+        
+        all_candidate_evaluations.append({
+            "prompt": candidate,
+            "contradiction_score": contradiction_score,
+            "format_score": format_score,
+            "safety_score": safety_score,
+            "relevance_score": 0.8  # 기본값, 실제로는 모델 출력과 비교해야 함
+        })
+    
+    # 3단계: 성능 순위 매기기
+    if progress_callback:
+        progress_callback("🏆 최적 프롬프트 선택 중...")
+    
+    ranking_input = {
+        "CANDIDATE_EVALUATIONS": all_candidate_evaluations
+    }
+    
+    ranking_result = await Runner.run(
+        agents["performance_ranker_selector"],
+        json.dumps(ranking_input),
+        progress_callback,
+        api_key
+    )
+    
+    # 4단계: 최적화된 프롬프트 선택 및 추가 개선
+    best_prompt = ranking_result.final_output.ranked_prompts[0]["prompt"]
+    
+    # 최종 프롬프트 최적화
     optimization_input = {
         "original_prompt": prompt,
-        "all_issues": all_issues
+        "all_issues": [],
+        "detected_type": detected_type,
+        "best_candidate": best_prompt
     }
     
     optimization_result = await Runner.run(
@@ -908,28 +1198,15 @@ async def optimize_prompt_comprehensive(
         api_key
     )
     
-    # 4단계: Few-shot 최적화 (있는 경우)
-    final_messages = few_shot_messages or []
-    if few_shot_messages:
-        few_shot_input = {
-            "messages": [msg.model_dump() for msg in few_shot_messages],
-            "optimized_prompt": optimization_result.final_output.optimized_prompt
-        }
-        few_shot_result = await Runner.run(
-            agents["few_shot_optimizer"],
-            json.dumps(few_shot_input),
-            progress_callback,
-            api_key
-        )
-        final_messages = few_shot_result.final_output.get("messages", [])
-    
     return {
         "original_prompt": prompt,
+        "detected_type": detected_type,
+        "type_detection": type_detection_result.final_output.model_dump() if type_detection_result else None,
+        "prompt_candidates": prompt_candidates,
+        "candidate_evaluations": all_candidate_evaluations,
+        "ranking_results": ranking_result.final_output.model_dump(),
         "optimized_prompt": optimization_result.final_output.optimized_prompt,
-        "analysis_results": all_issues,
         "optimization_details": optimization_result.final_output.model_dump(),
-        "optimized_messages": final_messages,
-        "total_issues_found": total_issues,
         "estimated_improvement": optimization_result.final_output.estimated_improvement
     }
 
