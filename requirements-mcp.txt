@@ -1,0 +1,8 @@
+# MCP 관련 의존성
+mcp>=1.0.0
+
+# 기존 프로젝트 의존성 포함
+-r requirements.txt
+
+# MCP 서버 추가 의존성
+anyio>=4.0.0 
