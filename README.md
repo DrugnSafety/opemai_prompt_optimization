@@ -4,31 +4,97 @@
 
 OpenAI의 [Prompt Optimization Cookbook](https://cookbook.openai.com/examples/optimize_prompts)을 기반으로 하여, 사용자 피드백을 통한 반복적 개선이 가능한 고도화된 프롬프트 최적화 도구입니다.
 
+> **📖 참고 자료**: 이 프로젝트는 [OpenAI Cookbook의 Prompt Optimization 예제](https://cookbook.openai.com/examples/optimize_prompts)를 기반으로 개발되었으며, GPT-4.1 가이드라인을 통합하여 확장된 기능을 제공합니다.
+
+## 👨‍💻 개발자 정보
+
+**Mingyu Kang**
+- 📧 **Email**: [irreversibly@gmail.com](mailto:irreversibly@gmail.com)
+- 💼 **LinkedIn**: [linkedin.com/in/mingyu-kang-28473493](https://linkedin.com/in/mingyu-kang-28473493)
+- 🏠 **Homepage**: [https://secretive-feels-f92.notion.site/1b502c77e2c980158dcef59faefeae63](https://secretive-feels-f92.notion.site/1b502c77e2c980158dcef59faefeae63)
+
 ## ✨ 주요 기능
 
-### 🔍 **자동 프롬프트 분석**
-- **명확성 검사**: 모호한 표현 및 역할 정의 문제 감지
-- **구체성 검사**: 추상적 지시사항 및 출력 형식 문제 식별
-- **지시사항 준수 검사**: 상충되는 지시사항 및 모순점 탐지
-- **에이전틱 능력 검사**: GPT-4.1 가이드라인 기반 에이전틱 기능 분석
+### 🔍 **자동 프롬프트 분석 - Checker 시스템**
 
-### 🛠️ **자동 최적화**
-- GPT-4.1 Prompting Guide 기반 프롬프트 개선
-- Few-shot 예제 일관성 검사 및 수정
-- 구조화된 출력 형식 명시
-- 에이전틱 능력 강화 (지속성, 계획 수립, 반성적 사고)
+본 도구는 4가지 전문 Checker를 통해 종합적인 프롬프트 분석을 수행합니다:
 
-### 💬 **Human-in-the-Loop 개선**
-- 사용자 피드백 기반 추가 최적화
-- 실시간 피드백 분석 및 프롬프트 수정
-- 반복적 개선을 통한 점진적 품질 향상
-- Before/After 비교 및 변경사항 추적
+#### 1. **Clarity Checker (명확성 검사기)**
+- **기능**: 프롬프트의 명확성과 이해도를 분석
+- **검사 항목**:
+  - 모호한 표현 감지 (maybe, perhaps, might 등)
+  - 역할 정의 명확성 검사
+  - 과도한 질문 포함 여부 체크
+  - 프롬프트 길이 적절성 평가
+- **출력**: 명확성 관련 문제점 리스트 및 심각도 평가
+
+#### 2. **Specificity Checker (구체성 검사기)**
+- **기능**: 지시사항의 구체성과 세부성을 평가
+- **검사 항목**:
+  - 추상적 지시사항 감지 (do something, help me 등)
+  - 출력 형식 명시 여부 확인
+  - 프롬프트 컨텍스트 충분성 평가
+  - 도구 사용 시 계획 수립 지침 존재 여부
+- **출력**: 구체성 개선 필요 영역 식별
+
+#### 3. **Instruction Following Checker (지시사항 준수 검사기)**
+- **기능**: 지시사항의 일관성과 실행 가능성을 검증
+- **검사 항목**:
+  - 상충되는 지시사항 탐지 (always vs never, must vs optional)
+  - 문장 완결성 검사
+  - 우선순위 명확성 평가
+  - 지시사항 구조화 정도 분석
+- **출력**: 모순점 및 개선 필요 지시사항 식별
+
+#### 4. **Agentic Capability Checker (에이전틱 능력 검사기)**
+- **기능**: GPT-4.1의 에이전틱 워크플로우 기능 최적화 분석
+- **검사 항목**:
+  - 계획 수립 능력 유도 여부
+  - 반성적 사고 프로세스 포함 여부
+  - 단계별 접근법 명시성
+  - 도구 사용 및 외부 리소스 활용 지침
+  - 작업 지속성 및 상태 관리 고려사항
+- **출력**: 에이전틱 기능 강화를 위한 개선 사항
+
+### 🛠️ **자동 최적화 시스템**
+
+#### Prompt Optimizer Agent
+- **기능**: 분석 결과를 바탕으로 프롬프트 자동 개선
+- **처리 과정**:
+  1. 모든 Checker 결과 통합 분석
+  2. GPT-4.1 가이드라인 기반 개선안 생성
+  3. 구조화된 프롬프트 재작성
+  4. 예상 성능 개선률 계산
+
+#### Few-shot Optimizer Agent
+- **기능**: Few-shot 예제의 일관성 및 효과성 개선
+- **처리 과정**:
+  - 예제와 프롬프트 간 일관성 검사
+  - 예제 품질 평가 및 개선
+  - 최적 예제 수 및 구조 제안
+
+### 💬 **Human-in-the-Loop 개선 시스템**
+
+#### Feedback Analyzer Agent
+- **기능**: 사용자 피드백을 구조화하여 분석
+- **처리 과정**:
+  - 피드백 카테고리 자동 분류
+  - 개선 우선순위 결정
+  - 수정 전략 수립
+
+#### Prompt Reviser Agent
+- **기능**: 피드백을 바탕으로 프롬프트 추가 개선
+- **처리 과정**:
+  - 피드백 반영 계획 수립
+  - 점진적 프롬프트 수정
+  - 변경사항 추적 및 문서화
 
 ### 🎨 **사용자 친화적 인터페이스**
 - Streamlit 기반 웹 인터페이스
 - 5단계 탭 구조 (입력 → 분석 → 결과 → 최적화 → 피드백)
 - 실시간 진행 상황 표시
 - 결과 다운로드 및 공유 기능
+- 다국어 지원 (한국어/영어)
 
 ## 🏗️ 시스템 아키텍처
 
@@ -335,19 +401,26 @@ MIT License - 자유롭게 사용, 수정, 배포 가능
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📞 지원
+## 📞 지원 및 연락처
 
-- **이슈 리포트**: [GitHub Issues](https://github.com/your-repo/issues)
-- **문서**: [Wiki](https://github.com/your-repo/wiki)
-- **이메일**: your-email@example.com
+- **개발자 이메일**: [irreversibly@gmail.com](mailto:irreversibly@gmail.com)
+- **LinkedIn**: [mingyu-kang-28473493](https://linkedin.com/in/mingyu-kang-28473493)
+- **개발자 블로그**: [https://secretive-feels-f92.notion.site/1b502c77e2c980158dcef59faefeae63](https://secretive-feels-f92.notion.site/1b502c77e2c980158dcef59faefeae63)
 
 ## 🙏 감사의 말
 
-- [OpenAI Cookbook](https://cookbook.openai.com/examples/optimize_prompts) 팀
-- [GPT-4.1 Prompting Guide](https://cookbook.openai.com/examples/gpt4-1_prompting_guide)
-- Streamlit 개발팀
-- 모든 기여자들
+- **[OpenAI Cookbook](https://cookbook.openai.com/examples/optimize_prompts)** 팀 - 본 프로젝트의 기반이 된 훌륭한 예제 제공
+- **[GPT-4.1 Prompting Guide](https://cookbook.openai.com/examples/gpt4-1_prompting_guide)** - 최신 프롬프팅 기법 가이드라인
+- **Streamlit 개발팀** - 사용자 친화적인 웹 인터페이스 프레임워크
+- **OpenAI** - 강력한 AI 모델 및 API 제공
+- 모든 오픈소스 기여자들
+
+## 📚 추가 자료
+
+- **참고한 OpenAI Cookbook 예제**: [https://cookbook.openai.com/examples/optimize_prompts](https://cookbook.openai.com/examples/optimize_prompts)
+- **GPT-4.1 공식 가이드**: [https://cookbook.openai.com/examples/gpt4-1_prompting_guide](https://cookbook.openai.com/examples/gpt4-1_prompting_guide)
+- **개발자 포트폴리오**: [https://secretive-feels-f92.notion.site/1b502c77e2c980158dcef59faefeae63](https://secretive-feels-f92.notion.site/1b502c77e2c980158dcef59faefeae63)
 
 ---
 
-**Made with ❤️ for better AI prompts** 
+**Made with ❤️ by Mingyu Kang - For better AI prompts and Human-AI collaboration** 

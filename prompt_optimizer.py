@@ -6,6 +6,7 @@ from enum import Enum
 from typing import Any, List, Dict, Optional
 from pydantic import BaseModel, Field
 import streamlit as st
+import re
 
 # 기본 모델 정의
 class Role(str, Enum):
@@ -72,6 +73,14 @@ class RevisedPrompt(BaseModel):
     feedback_addressed: List[str]
     improvement_explanation: str
 
+class GeneralResponse(BaseModel):
+    """범용 Agent 응답"""
+    original_prompt: str
+    modified_prompt: str
+    changes_made: List[str]
+    explanation: str
+    feedback_addressed: str
+
 # Agent 구현
 class Agent:
     def __init__(self, name: str, model: str, output_type: type, instructions: str):
@@ -82,10 +91,126 @@ class Agent:
 
 class Runner:
     @staticmethod
-    async def run(agent: Agent, input_data: str, progress_callback=None):
+    def _get_json_schema(model_class):
+        """Pydantic 모델의 JSON 스키마를 문자열로 반환"""
+        if model_class == Issues:
+            return '''{
+  "has_issues": boolean,
+  "issues": ["string"],
+  "severity": "low|medium|high",
+  "category": "string"
+}'''
+        elif model_class == OptimizedPrompt:
+            return '''{
+  "original_prompt": "string",
+  "optimized_prompt": "string", 
+  "changes_made": ["string"],
+  "improvement_explanation": "string",
+  "estimated_improvement": number
+}'''
+        elif model_class == FeedbackAnalysis:
+            return '''{
+  "understood_feedback": "string",
+  "feedback_category": "string",
+  "required_changes": ["string"],
+  "revision_strategy": "string",
+  "estimated_impact": number
+}'''
+        elif model_class == RevisedPrompt:
+            return '''{
+  "original_optimized_prompt": "string",
+  "user_feedback": "string",
+  "revised_prompt": "string",
+  "changes_made": ["string"],
+  "feedback_addressed": ["string"],
+  "improvement_explanation": "string"
+}'''
+        elif model_class == GeneralResponse:
+            return '''{
+  "original_prompt": "string",
+  "modified_prompt": "string",
+  "changes_made": ["string"],
+  "explanation": "string",
+  "feedback_addressed": "string"
+}'''
+        else:
+            return "{}"
+    
+    @staticmethod
+    async def run(agent: Agent, input_data: str, progress_callback=None, api_key: str = None):
         if progress_callback:
             progress_callback(f"🔍 Agent '{agent.name}' 실행 중...")
         
+        class Result:
+            def __init__(self, final_output):
+                self.final_output = final_output
+        
+        # API 키가 없으면 시뮬레이션 모드
+        if not api_key:
+            return await Runner._run_simulation(agent, input_data, progress_callback)
+        
+        # 실제 OpenAI API 호출
+        try:
+            client = AsyncOpenAI(api_key=api_key)
+            
+            # Agent별 프롬프트 구성
+            system_prompt = f"""You are an expert prompt optimizer specializing in {agent.name.replace('_', ' ')}.
+            
+            {agent.instructions}
+            
+            Analyze the following input and provide a structured response in JSON format.
+            
+            IMPORTANT: Return ONLY the JSON object that matches this exact structure:
+            {Runner._get_json_schema(agent.output_type)}
+            
+            Do not include any additional text, explanations, or markdown formatting.
+            """
+            
+            response = await client.chat.completions.create(
+                model=agent.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": input_data}
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1
+            )
+            
+            # JSON 응답 파싱 및 검증
+            response_content = response.choices[0].message.content.strip()
+            
+            # JSON 파싱 시도
+            try:
+                result_data = json.loads(response_content)
+            except json.JSONDecodeError as e:
+                if progress_callback:
+                    progress_callback(f"❌ {agent.name} JSON 파싱 오류: {str(e)}")
+                # JSON 파싱 실패 시 시뮬레이션 모드로 폴백
+                return await Runner._run_simulation(agent, input_data, progress_callback)
+            
+            # Pydantic 모델 검증 및 변환
+            try:
+                result = agent.output_type(**result_data)
+            except Exception as e:
+                if progress_callback:
+                    progress_callback(f"❌ {agent.name} 모델 검증 오류: {str(e)}")
+                # 모델 검증 실패 시 시뮬레이션 모드로 폴백
+                return await Runner._run_simulation(agent, input_data, progress_callback)
+            
+            if progress_callback:
+                progress_callback(f"✅ {agent.name} 완료")
+            
+            return Result(result)
+            
+        except Exception as e:
+            if progress_callback:
+                progress_callback(f"❌ {agent.name} 오류: {str(e)}")
+            # 오류 시 시뮬레이션 모드로 폴백
+            return await Runner._run_simulation(agent, input_data, progress_callback)
+    
+    @staticmethod
+    async def _run_simulation(agent: Agent, input_data: str, progress_callback=None):
+        """시뮬레이션 모드 - API 키가 없을 때 사용"""
         class Result:
             def __init__(self, final_output):
                 self.final_output = final_output
@@ -107,6 +232,8 @@ class Runner:
             return await Runner._analyze_feedback(agent, input_data, progress_callback)
         elif agent.name == "prompt_reviser":
             return await Runner._revise_prompt_with_feedback(agent, input_data, progress_callback)
+        elif agent.name == "general_agent":
+            return await Runner._general_response(agent, input_data, progress_callback)
         
         return Result(agent.output_type.no_issues() if hasattr(agent.output_type, 'no_issues') else {})
 
@@ -318,16 +445,24 @@ class Runner:
                         optimized_prompt = optimized_prompt.replace('maybe', 'specifically')
                         optimized_prompt = optimized_prompt.replace('perhaps', 'exactly')
                         changes_made.append("모호한 표현 제거")
-            
+
+            # 마크다운 강조 복원 (큰 오류가 없을 때만)
+            all_issues_flat = [i for issue_set in all_issues for i in issue_set.get('issues', [])]
+            optimized_prompt = preserve_markdown_emphasis(original_prompt, optimized_prompt, all_issues_flat)
+
             # 에이전틱 구성 요소 추가
             if agentic_components:
                 optimized_prompt += "\n\n" + "\n".join(agentic_components)
-            
+
             # 4. 출력 형식 명시
             if 'format' not in optimized_prompt.lower():
                 optimized_prompt += "\n\nProvide your response in a clear, structured format."
                 changes_made.append("출력 형식 지침 추가")
-            
+
+            # 줄바꿈 보존: \n이 없으면 문장 끝마다 강제로 추가
+            if '\n' not in optimized_prompt:
+                optimized_prompt = re.sub(r'([.!?]) +', r'\1\n', optimized_prompt)
+
             result = OptimizedPrompt(
                 original_prompt=original_prompt,
                 optimized_prompt=optimized_prompt,
@@ -553,80 +688,202 @@ class Runner:
                 improvement_explanation="피드백 기반 프롬프트 수정 중 오류 발생"
             ))
 
-# Agent 인스턴스 생성
-clarity_checker = Agent(
-    name="clarity_checker",
-    model="gpt-4.1",
-    output_type=Issues,
-    instructions="Analyze prompt clarity based on GPT-4.1 guidelines"
-)
+    @staticmethod
+    async def _general_response(agent: Agent, input_data: str, progress_callback=None):
+        """범용 agent 시뮬레이션"""
+        if progress_callback:
+            progress_callback("🤖 범용 요청 처리 중...")
+        
+        class Result:
+            def __init__(self, final_output):
+                self.final_output = final_output
+        
+        try:
+            data = json.loads(input_data)
+            original_prompt = data.get("original_prompt", "")
+            user_feedback = data.get("user_feedback", "")
+            
+            modified_prompt = original_prompt
+            changes_made = []
+            explanation = "사용자 요청에 따라 프롬프트를 수정했습니다."
+            
+            # 언어 변경 처리
+            if "한글" in user_feedback or "korean" in user_feedback.lower():
+                if "translate" in user_feedback.lower() or "변경" in user_feedback or "번역" in user_feedback:
+                    # 영어 -> 한글 번역 시뮬레이션
+                    if "You are" in original_prompt:
+                        modified_prompt = original_prompt.replace("You are", "당신은")
+                        modified_prompt = modified_prompt.replace("Please", "다음을")
+                        modified_prompt = modified_prompt.replace("Provide", "제공하세요")
+                        modified_prompt = modified_prompt.replace("Create", "생성하세요") 
+                        modified_prompt = modified_prompt.replace("Analyze", "분석하세요")
+                        modified_prompt = modified_prompt.replace("Write", "작성하세요")
+                        changes_made.append("프롬프트를 한국어로 번역")
+                        explanation = "프롬프트를 한국어로 번역했습니다."
+            
+            # 영어 변경 처리
+            elif "english" in user_feedback.lower() or "영어" in user_feedback:
+                if "translate" in user_feedback.lower() or "변경" in user_feedback or "번역" in user_feedback:
+                    # 한글 -> 영어 번역 시뮬레이션
+                    if "당신은" in original_prompt:
+                        modified_prompt = original_prompt.replace("당신은", "You are")
+                        modified_prompt = modified_prompt.replace("다음을", "Please")
+                        modified_prompt = modified_prompt.replace("제공하세요", "provide")
+                        modified_prompt = modified_prompt.replace("생성하세요", "create")
+                        modified_prompt = modified_prompt.replace("분석하세요", "analyze")
+                        modified_prompt = modified_prompt.replace("작성하세요", "write")
+                        changes_made.append("프롬프트를 영어로 번역")
+                        explanation = "프롬프트를 영어로 번역했습니다."
+            
+            # 문체 변경 처리
+            elif "formal" in user_feedback.lower() or "정중" in user_feedback or "격식" in user_feedback:
+                modified_prompt = f"Please {modified_prompt.lstrip('Please ')}"
+                if not modified_prompt.endswith('.'):
+                    modified_prompt += "."
+                changes_made.append("정중한 문체로 변경")
+                explanation = "프롬프트를 정중한 문체로 변경했습니다."
+            
+            elif "casual" in user_feedback.lower() or "친근" in user_feedback or "편한" in user_feedback:
+                modified_prompt = modified_prompt.replace("Please ", "")
+                modified_prompt = modified_prompt.replace("Kindly ", "")
+                changes_made.append("친근한 문체로 변경")
+                explanation = "프롬프트를 친근한 문체로 변경했습니다."
+            
+            # 길이 조정
+            elif "shorter" in user_feedback.lower() or "짧게" in user_feedback or "간단" in user_feedback:
+                sentences = modified_prompt.split('.')
+                modified_prompt = '. '.join(sentences[:len(sentences)//2]) + '.'
+                changes_made.append("프롬프트 길이 단축")
+                explanation = "프롬프트를 더 간결하게 만들었습니다."
+            
+            elif "longer" in user_feedback.lower() or "길게" in user_feedback or "자세히" in user_feedback:
+                modified_prompt += " Please provide detailed explanations and comprehensive responses."
+                changes_made.append("프롬프트 길이 확장")
+                explanation = "프롬프트에 더 자세한 설명을 추가했습니다."
+            
+            # 기본 처리
+            if not changes_made:
+                modified_prompt += f"\n\n[User Request: {user_feedback}]"
+                changes_made.append("사용자 요청 사항 추가")
+                explanation = f"사용자 요청 '{user_feedback}'을 프롬프트에 반영했습니다."
+            
+            result = GeneralResponse(
+                original_prompt=original_prompt,
+                modified_prompt=modified_prompt,
+                changes_made=changes_made,
+                explanation=explanation,
+                feedback_addressed=user_feedback
+            )
+            
+            if progress_callback:
+                progress_callback(f"✅ 범용 요청 처리 완료: {len(changes_made)}개 변경사항 적용")
+            
+            return Result(result)
+            
+        except Exception as e:
+            if progress_callback:
+                progress_callback(f"❌ 범용 요청 처리 중 오류 발생: {e}")
+            return Result(GeneralResponse(
+                original_prompt=input_data,
+                modified_prompt=input_data,
+                changes_made=[],
+                explanation="범용 요청 처리 중 오류 발생",
+                feedback_addressed=input_data
+            ))
 
-specificity_checker = Agent(
-    name="specificity_checker", 
-    model="gpt-4.1",
-    output_type=Issues,
-    instructions="Analyze prompt specificity and concrete instructions"
-)
+def preserve_markdown_emphasis(original: str, optimized: str, issues: list) -> str:
+    """원본의 마크다운 강조(*, **)를 최적화 프롬프트에 복원 (큰 오류가 없을 때만)"""
+    # checker에서 강조 부분이 문제라고 지적한 경우는 복원하지 않음
+    issue_text = ' '.join(issues).lower() if issues else ''
+    if any(x in issue_text for x in ['emphasis', 'bold', 'italic', 'star', 'asterisk', 'markdown', 'formatting']):
+        return optimized
+    
+    # 마크다운 강조 패턴 추출
+    patterns = [r'\*\*[^*]+\*\*', r'\*[^*]+\*', r'__[^_]+__', r'_[^_]+_']
+    for pat in patterns:
+        for match in re.findall(pat, original):
+            # 강조된 텍스트에서 * 또는 _ 제거
+            plain = match.strip('*_')
+            # 최적화 프롬프트에 강조가 사라졌다면 복원
+            if plain in optimized and match not in optimized:
+                optimized = optimized.replace(plain, match)
+    return optimized
 
-instruction_following_checker = Agent(
-    name="instruction_following_checker",
-    model="gpt-4.1", 
-    output_type=Issues,
-    instructions="Check for contradictory or unclear instructions"
-)
-
-agentic_capability_checker = Agent(
-    name="agentic_capability_checker",
-    model="gpt-4.1",
-    output_type=Issues,
-    instructions="Analyze agentic workflow capabilities based on GPT-4.1 guide"
-)
-
-prompt_optimizer = Agent(
-    name="prompt_optimizer",
-    model="gpt-4.1",
-    output_type=OptimizedPrompt,
-    instructions="Optimize prompts based on GPT-4.1 best practices"
-)
-
-few_shot_optimizer = Agent(
-    name="few_shot_optimizer",
-    model="gpt-4.1",
-    output_type=dict,
-    instructions="Optimize few-shot examples for better performance"
-)
-
-feedback_analyzer = Agent(
-    name="feedback_analyzer",
-    model="gpt-4.1",
-    output_type=FeedbackAnalysis,
-    instructions="Analyze user feedback to understand their concerns and suggest improvements"
-)
-
-prompt_reviser = Agent(
-    name="prompt_reviser",
-    model="gpt-4.1",
-    output_type=RevisedPrompt,
-    instructions="Revise the prompt based on user feedback to improve clarity and adherence"
-)
+def create_agents(model: str = "gpt-4o"):
+    """모델을 기반으로 Agent 인스턴스들을 생성"""
+    return {
+        "clarity_checker": Agent(
+            name="clarity_checker",
+            model=model,
+            output_type=Issues,
+            instructions="Analyze prompt clarity based on GPT-4.1 guidelines"
+        ),
+        "specificity_checker": Agent(
+            name="specificity_checker", 
+            model=model,
+            output_type=Issues,
+            instructions="Analyze prompt specificity and concrete instructions"
+        ),
+        "instruction_following_checker": Agent(
+            name="instruction_following_checker",
+            model=model, 
+            output_type=Issues,
+            instructions="Check for contradictory or unclear instructions"
+        ),
+        "agentic_capability_checker": Agent(
+            name="agentic_capability_checker",
+            model=model,
+            output_type=Issues,
+            instructions="Analyze agentic workflow capabilities based on GPT-4.1 guide"
+        ),
+        "prompt_optimizer": Agent(
+            name="prompt_optimizer",
+            model=model,
+            output_type=OptimizedPrompt,
+            instructions="Optimize prompts based on GPT-4.1 best practices"
+        ),
+        "few_shot_optimizer": Agent(
+            name="few_shot_optimizer",
+            model=model,
+            output_type=dict,
+            instructions="Optimize few-shot examples for better performance"
+        ),
+        "feedback_analyzer": Agent(
+            name="feedback_analyzer",
+            model=model,
+            output_type=FeedbackAnalysis,
+            instructions="Analyze user feedback to understand their concerns and suggest improvements"
+        ),
+        "prompt_reviser": Agent(
+            name="prompt_reviser",
+            model=model,
+            output_type=RevisedPrompt,
+            instructions="Revise the prompt based on user feedback to improve clarity and adherence"
+        )
+    }
 
 # 메인 최적화 함수
 async def optimize_prompt_comprehensive(
     prompt: str,
     few_shot_messages: List[ChatMessage] = None,
-    progress_callback=None
+    progress_callback=None,
+    api_key: str = None,
+    model: str = "gpt-4o"
 ) -> Dict[str, Any]:
     """GPT-4.1 가이드라인 기반 종합적 프롬프트 최적화"""
     
     if progress_callback:
         progress_callback("🚀 종합적 프롬프트 분석 시작...")
     
+    # Agent 생성
+    agents = create_agents(model)
+    
     # 1단계: 병렬 분석
     analysis_tasks = [
-        Runner.run(clarity_checker, prompt, progress_callback),
-        Runner.run(specificity_checker, prompt, progress_callback),
-        Runner.run(instruction_following_checker, prompt, progress_callback),
-        Runner.run(agentic_capability_checker, prompt, progress_callback),
+        Runner.run(agents["clarity_checker"], prompt, progress_callback, api_key),
+        Runner.run(agents["specificity_checker"], prompt, progress_callback, api_key),
+        Runner.run(agents["instruction_following_checker"], prompt, progress_callback, api_key),
+        Runner.run(agents["agentic_capability_checker"], prompt, progress_callback, api_key),
     ]
     
     analysis_results = await asyncio.gather(*analysis_tasks)
@@ -645,9 +902,10 @@ async def optimize_prompt_comprehensive(
     }
     
     optimization_result = await Runner.run(
-        prompt_optimizer, 
+        agents["prompt_optimizer"], 
         json.dumps(optimization_input),
-        progress_callback
+        progress_callback,
+        api_key
     )
     
     # 4단계: Few-shot 최적화 (있는 경우)
@@ -658,9 +916,10 @@ async def optimize_prompt_comprehensive(
             "optimized_prompt": optimization_result.final_output.optimized_prompt
         }
         few_shot_result = await Runner.run(
-            few_shot_optimizer,
+            agents["few_shot_optimizer"],
             json.dumps(few_shot_input),
-            progress_callback
+            progress_callback,
+            api_key
         )
         final_messages = few_shot_result.final_output.get("messages", [])
     
@@ -677,7 +936,9 @@ async def optimize_prompt_comprehensive(
 async def revise_prompt_with_feedback(
     optimized_prompt: str,
     user_feedback: str,
-    progress_callback=None
+    progress_callback=None,
+    api_key: str = None,
+    model: str = "gpt-4o"
 ) -> Dict[str, Any]:
     """피드백을 기반으로 최적화된 프롬프트를 추가 개선"""
     
@@ -689,10 +950,14 @@ async def revise_prompt_with_feedback(
         "user_feedback": user_feedback
     }
     
+    # Agent 생성
+    agents = create_agents(model)
+    
     feedback_analysis_result = await Runner.run(
-        feedback_analyzer,
+        agents["feedback_analyzer"],
         json.dumps(feedback_input),
-        progress_callback
+        progress_callback,
+        api_key
     )
     
     if progress_callback:
@@ -705,9 +970,10 @@ async def revise_prompt_with_feedback(
     }
     
     revision_result = await Runner.run(
-        prompt_reviser,
+        agents["prompt_reviser"],
         json.dumps(revision_input),
-        progress_callback
+        progress_callback,
+        api_key
     )
     
     return {
@@ -718,4 +984,67 @@ async def revise_prompt_with_feedback(
         "revised_prompt": revision_result.final_output.revised_prompt,
         "changes_made": revision_result.final_output.changes_made,
         "feedback_addressed": revision_result.final_output.feedback_addressed
-    } 
+    }
+
+# 범용 Agent 처리 함수
+async def run_general_agent(original_prompt: str, user_feedback: str, api_key: str = None, model: str = "gpt-4o"):
+    """범용 agent를 사용하여 사용자 요청 처리"""
+    
+    def progress_callback(message):
+        if hasattr(st.session_state, 'progress_messages'):
+            timestamp = asyncio.get_event_loop().time()
+            formatted_time = f"{int(timestamp % 86400 // 3600):02d}:{int(timestamp % 3600 // 60):02d}:{int(timestamp % 60):02d}"
+            st.session_state.progress_messages.append(f"{formatted_time} {message}")
+
+    # 범용 Agent 생성
+    general_agent = Agent(
+        name="general_agent",
+        model=model,
+        output_type=GeneralResponse,
+        instructions=f"""
+        You are a versatile prompt modification agent. Your task is to modify the given prompt according to the user's specific feedback and requirements.
+        
+        Capabilities:
+        - Language translation (Korean ↔ English, etc.)
+        - Style adjustment (formal ↔ casual, technical ↔ simple)
+        - Content modification (add/remove specific elements)
+        - Format changes (structured ↔ narrative)
+        - Tone adjustment (professional, friendly, authoritative)
+        - Length adjustment (expand or compress)
+        - Any other reasonable prompt modifications
+        
+        Always provide:
+        1. The original prompt
+        2. The modified prompt according to user feedback
+        3. Specific changes made
+        4. Clear explanation of modifications
+        5. How the user feedback was addressed
+        """
+    )
+    
+    # 입력 데이터 준비
+    input_data = {
+        "original_prompt": original_prompt,
+        "user_feedback": user_feedback,
+        "instruction": "Modify the prompt according to the user feedback. Be precise and thorough."
+    }
+    
+    # Agent 실행
+    result = await Runner.run(
+        general_agent,
+        json.dumps(input_data),
+        progress_callback,
+        api_key
+    )
+    
+    if result and hasattr(result, 'final_output'):
+        return {
+            "original_prompt": original_prompt,
+            "user_feedback": user_feedback,
+            "modified_prompt": result.final_output.modified_prompt,
+            "changes_made": result.final_output.changes_made,
+            "explanation": result.final_output.explanation,
+            "feedback_addressed": result.final_output.feedback_addressed
+        }
+    
+    return None
